@@ -18,5 +18,6 @@ To avoid messing with other resources, the script only works on resources with t
 2. Install the required package:
    ```bash
    pip install -r requirements.txt
-   How to run the main script:
+
+How to run the main script:
 python main.py
