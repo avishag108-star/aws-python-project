@@ -3,46 +3,46 @@ import sys
 import os
 import time
 
-# --- הגדרות קבועות ---
+# Configuration
 AMI_ID = "ami-04b4f1a9cf54c11d0"
 INSTANCE_TYPE = "t3.micro"
 TAG_KEY = "CreatedBy"
-TAG_VALUE = "avishag-cli"  # השם הייחודי שלך
+TAG_VALUE = "avishag-cli" 
 
-# חיבורים לאמזון
+# Connect to AWS services
 ec2 = boto3.client('ec2', region_name='us-east-1')
 s3 = boto3.client('s3', region_name='us-east-1')
 route53 = boto3.client('route53', region_name='us-east-1')
 
-# =======================
-# חלק 1: שרתים (EC2)
-# =======================
+# --- EC2 Functions ---
 def create_instance():
-    print("🚀 Checking limits...")
+    print("Checking current instances...")
     try:
+        # Filter for my specific instances
         response = ec2.describe_instances(
             Filters=[{'Name': f'tag:{TAG_KEY}', 'Values': [TAG_VALUE]},
                      {'Name': 'instance-state-name', 'Values': ['running', 'pending']}]
         )
         count = sum(len(r['Instances']) for r in response['Reservations'])
         
+        # Hard limit check
         if count >= 2:
-            print(f"⛔ STOP! You already have {count}/2 servers. Cannot create more.")
+            print(f"Error: You have {count} servers running. Limit is 2.")
             return
 
-        print("✅ Creating new server...")
+        print("Creating new instance...")
         res = ec2.run_instances(
             ImageId=AMI_ID, InstanceType=INSTANCE_TYPE, MinCount=1, MaxCount=1,
             TagSpecifications=[{'ResourceType': 'instance', 
                                 'Tags': [{'Key': TAG_KEY, 'Value': TAG_VALUE}, 
                                          {'Key': 'Name', 'Value': 'My-Auto-Server'}]}]
         )
-        print(f"🎉 Success! ID: {res['Instances'][0]['InstanceId']}")
+        print(f"Instance created successfully: {res['Instances'][0]['InstanceId']}")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
 
 def list_instances():
-    print("\n📋 Your Servers:")
+    print("\nListing instances:")
     try:
         response = ec2.describe_instances(Filters=[{'Name': f'tag:{TAG_KEY}', 'Values': [TAG_VALUE]}])
         found = False
@@ -50,57 +50,59 @@ def list_instances():
             for i in r['Instances']:
                 state = i['State']['Name']
                 public_ip = i.get('PublicIpAddress', 'N/A')
-                print(f"- ID: {i['InstanceId']} | Status: {state} | IP: {public_ip}")
+                print(f"ID: {i['InstanceId']} | Status: {state} | IP: {public_ip}")
                 found = True
-        if not found: print("No servers found.")
+        if not found: print("No instances found.")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
 
 def stop_instance():
     list_instances()
-    instance_id = input("Enter Instance ID to STOP: ").strip()
+    instance_id = input("Enter Instance ID to stop: ").strip()
     try:
+        # Verify ownership
         check = ec2.describe_instances(InstanceIds=[instance_id], Filters=[{'Name': f'tag:{TAG_KEY}', 'Values': [TAG_VALUE]}])
         if not check['Reservations']:
-            print("⛔ Access Denied! This server is not yours.")
+            print("Access Denied: This instance is not yours.")
             return
         ec2.stop_instances(InstanceIds=[instance_id])
-        print(f"✅ Stopping server {instance_id}...")
+        print(f"Stopping instance {instance_id}...")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
 
-# =======================
-# חלק 2: אחסון (S3)
-# =======================
+# --- S3 Functions ---
 def create_bucket():
-    bucket_name = input("Enter unique bucket name: ").strip().lower()
-    is_public = input("Should it be public? (yes/no): ").strip().lower()
+    bucket_name = input("Enter bucket name: ").strip().lower()
+    is_public = input("Public bucket? (yes/no): ").strip().lower()
     
     acl = 'private'
     if is_public == 'yes':
-        confirm = input("⚠️ WARNING: Public bucket? (yes/no): ")
+        confirm = input("Are you sure? (yes/no): ")
         if confirm == 'yes': acl = 'public-read'
-        else: print("Cancelled. Defaulting to private.")
     
     try:
-        print(f"Creating bucket '{bucket_name}'...")
+        print(f"Creating bucket {bucket_name}...")
         s3.create_bucket(Bucket=bucket_name)
+        
+        # Add tag for identification
         s3.put_bucket_tagging(
             Bucket=bucket_name,
             Tagging={'TagSet': [{'Key': TAG_KEY, 'Value': TAG_VALUE}]}
         )
+        
         if acl == 'public-read':
             try:
                 s3.put_bucket_acl(Bucket=bucket_name, ACL='public-read')
-                print("🔓 Bucket set to PUBLIC.")
+                print("Bucket is now Public.")
             except:
-                print("⚠️ Could not set public access. Created as Private.")
-        print(f"✅ Success! Bucket created.")
+                print("Warning: Could not set public access.")
+        
+        print("Bucket created successfully.")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
 
 def list_buckets():
-    print("\n📦 Your S3 Buckets:")
+    print("\nMy Buckets:")
     try:
         response = s3.list_buckets()
         found = False
@@ -109,93 +111,88 @@ def list_buckets():
             try:
                 tags = s3.get_bucket_tagging(Bucket=name)
                 tag_set = tags.get('TagSet', [])
+                # Check if tag exists
                 if any(t['Key'] == TAG_KEY and t['Value'] == TAG_VALUE for t in tag_set):
-                    print(f"- Bucket: {name}")
+                    print(f"- {name}")
                     found = True
             except: continue
-        if not found: print("No managed buckets found.")
+        if not found: print("No buckets found.")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
 
 def upload_file():
     list_buckets()
     bucket_name = input("Enter Bucket Name: ").strip()
-    file_path = input("Enter file path: ").strip().replace('"', '')
+    # Remove quotes if user added them
+    file_path = input("Enter full file path: ").strip().replace('"', '')
     file_name = os.path.basename(file_path)
     
     try:
+        # Check permissions
         tags = s3.get_bucket_tagging(Bucket=bucket_name)
         tag_set = tags.get('TagSet', [])
         if not any(t['Key'] == TAG_KEY and t['Value'] == TAG_VALUE for t in tag_set):
-             print("⛔ Access Denied! Bucket not yours.")
+             print("Access Denied.")
              return
-        print(f"⬆️ Uploading {file_name}...")
+        
+        print(f"Uploading {file_name}...")
         s3.upload_file(file_path, bucket_name, file_name)
-        print("✅ Upload successful!")
+        print("Upload complete.")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
 
-# =======================
-# חלק 3: דומיינים (Route53) - חדש!
-# =======================
+# --- Route53 Functions ---
 def create_dns_zone():
-    zone_name = input("Enter DNS Zone name (e.g., my-site.com): ").strip()
+    zone_name = input("Enter Domain name: ").strip()
     try:
-        print(f"Creating Hosted Zone: {zone_name}...")
-        # יצירת האזור עם חותמת זמן כדי שיהיה ייחודי
+        print(f"Creating Zone: {zone_name}...")
         ref = str(time.time())
         res = route53.create_hosted_zone(Name=zone_name, CallerReference=ref)
-        zone_id = res['HostedZone']['Id']
-        
-        # ניקוי ה-ID (הוא מגיע לפעמים עם הקדמה)
-        clean_id = zone_id.split('/')[-1]
+        zone_id = res['HostedZone']['Id'].split('/')[-1]
 
-        # הוספת תגית כדי שנדע שזה שלנו
+        # Tagging the zone
         route53.change_tags_for_resource(
             ResourceType='hostedzone',
-            ResourceId=clean_id,
+            ResourceId=zone_id,
             AddTags=[{'Key': TAG_KEY, 'Value': TAG_VALUE}]
         )
-        print(f"✅ Success! Zone ID: {clean_id}")
+        print(f"Zone created. ID: {zone_id}")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
 
 def list_dns_zones():
-    print("\n🌐 Your DNS Zones:")
+    print("\nMy DNS Zones:")
     try:
         response = route53.list_hosted_zones()
         found = False
         for zone in response['HostedZones']:
             clean_id = zone['Id'].split('/')[-1]
             try:
-                # בדיקה האם האזור הזה שלנו (לפי תגית)
                 tags = route53.list_tags_for_resource(ResourceType='hostedzone', ResourceId=clean_id)
                 tag_list = tags['ResourceTagSet']['Tags']
-                
                 if any(t['Key'] == TAG_KEY and t['Value'] == TAG_VALUE for t in tag_list):
-                    print(f"- Zone: {zone['Name']} (ID: {clean_id})")
+                    print(f"- {zone['Name']} (ID: {clean_id})")
                     found = True
             except: continue
             
-        if not found: print("No managed zones found.")
+        if not found: print("No zones found.")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
 
 def create_dns_record():
     list_dns_zones()
     zone_id = input("Enter Zone ID: ").strip()
-    record_name = input("Enter Record Name (e.g., www.my-site.com): ").strip()
-    record_value = input("Enter Value (e.g., 1.2.3.4): ").strip()
+    record_name = input("Enter Record Name: ").strip()
+    record_value = input("Enter IP Value: ").strip()
     
     try:
-        # בדיקת בעלות לפני השינוי
+        # Check ownership
         tags = route53.list_tags_for_resource(ResourceType='hostedzone', ResourceId=zone_id)
         tag_list = tags['ResourceTagSet']['Tags']
         if not any(t['Key'] == TAG_KEY and t['Value'] == TAG_VALUE for t in tag_list):
-            print("⛔ Access Denied! This zone is not yours.")
+            print("Access Denied.")
             return
 
-        print("Creating DNS Record...")
         route53.change_resource_record_sets(
             HostedZoneId=zone_id,
             ChangeBatch={
@@ -210,28 +207,26 @@ def create_dns_record():
                 }]
             }
         )
-        print("✅ Success! Record created.")
+        print("Record created successfully.")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
 
-# =======================
-# תפריט ראשי סופי
-# =======================
+# --- Main Menu ---
 if __name__ == "__main__":
     while True:
-        print("\n--- AWS MANAGER CLI (FINAL) ---")
-        print("1. [EC2] Create Server")
-        print("2. [EC2] List Servers")
-        print("3. [EC2] Stop Server")
-        print("4. [S3]  Create Bucket")
-        print("5. [S3]  List Buckets")
-        print("6. [S3]  Upload File")
-        print("7. [DNS] Create Zone")
-        print("8. [DNS] List Zones")
-        print("9. [DNS] Add Record")
+        print("\n--- AWS CLI Tool ---")
+        print("1. Create EC2 Instance")
+        print("2. List EC2 Instances")
+        print("3. Stop EC2 Instance")
+        print("4. Create S3 Bucket")
+        print("5. List S3 Buckets")
+        print("6. Upload File to S3")
+        print("7. Create DNS Zone")
+        print("8. List DNS Zones")
+        print("9. Add DNS Record")
         print("0. Exit")
         
-        choice = input("Select option: ").strip()
+        choice = input("Select: ").strip()
 
         if choice == "1": create_instance()
         elif choice == "2": list_instances()
@@ -242,8 +237,5 @@ if __name__ == "__main__":
         elif choice == "7": create_dns_zone()
         elif choice == "8": list_dns_zones()
         elif choice == "9": create_dns_record()
-        elif choice == "0": 
-            print("Bye Bye! 👋")
-            break
-        else:
-            print("Invalid option.")
+        elif choice == "0": break
+        else: print("Invalid option.")
