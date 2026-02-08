@@ -1,12 +1,22 @@
-# AWS Python Project
+# AWS Final Project - Platform Engineering
 
-This is my final project for the Platform Engineering course.
-The tool is a CLI that manages AWS resources using Boto3.
+This is my final project for the course.
+It is a CLI tool written in Python (using boto3) that helps manage AWS resources.
 
-## Features
-* **EC2:** Create and stop instances (Limit: 2 instances).
-* **S3:** Create buckets and upload files.
-* **Route53:** Manage DNS zones and records.
+## What it does
+The tool has a menu to manage these resources:
+* **EC2:** Create instances (I added a hard limit of 2 servers), Stop instances, and List them.
+* **S3:** Create buckets, Upload files, and List buckets.
+* **Route53:** Create DNS zones and records.
 
-## How to run
+## Safety & Tagging
+To avoid messing with other resources, the script only works on resources with the tag:
+`CreatedBy: avishag-cli`
+
+## Setup & Installation
+1. Make sure you have AWS CLI configured.
+2. Install the required package:
+   ```bash
+   pip install -r requirements.txt
+   How to run the main script:
 python main.py
