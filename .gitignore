@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.env
+*.csv
+credentials.csv
+aws_keys.csv
+.vscode/
+venv/
+.vs/
