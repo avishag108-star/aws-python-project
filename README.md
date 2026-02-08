@@ -1,12 +1,12 @@
-# AWS Resource Manager CLI
+# AWS Python Project
 
-This tool allows developers to create and manage EC2 instances automatically.
+This is my final project for the Platform Engineering course.
+The tool is a CLI that manages AWS resources using Boto3.
 
-## Requirements
-- Python 3
-- AWS CLI
+## Features
+* **EC2:** Create and stop instances (Limit: 2 instances).
+* **S3:** Create buckets and upload files.
+* **Route53:** Manage DNS zones and records.
 
-## How to use
-1. Run the script:
-   python main.py
-2. Choose 'create' to launch a server or 'list' to see your servers.
+## How to run
+python main.py
