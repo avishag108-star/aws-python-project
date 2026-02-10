@@ -1,196 +1,240 @@
 ﻿import boto3
-import sys
 import os
 import time
 
-# Configuration
-AMI_ID = "ami-04b4f1a9cf54c11d0"
+REGION = "us-east-1"
 INSTANCE_TYPE = "t3.micro"
-TAG_KEY = "CreatedBy"
-TAG_VALUE = "avishag-cli" 
 
-# Connect to AWS services
-ec2 = boto3.client('ec2', region_name='us-east-1')
-s3 = boto3.client('s3', region_name='us-east-1')
-route53 = boto3.client('route53', region_name='us-east-1')
+TAGS = [
+    {'Key': 'CreatedBy', 'Value': 'avishag-cli'},
+    {'Key': 'Owner', 'Value': 'Avishag'},
+    {'Key': 'Project', 'Value': 'AWS-Final-Project'},
+    {'Key': 'Environment', 'Value': 'Dev'}
+]
 
-# --- EC2 Functions ---
-def create_instance():
-    print("Checking current instances...")
+ec2 = boto3.client('ec2', region_name=REGION)
+s3 = boto3.client('s3', region_name=REGION)
+route53 = boto3.client('route53', region_name=REGION)
+ssm = boto3.client('ssm', region_name=REGION)
+
+
+# ---------------- AMI via SSM ----------------
+
+def get_latest_ami():
     try:
-        # Filter for my specific instances
-        response = ec2.describe_instances(
-            Filters=[{'Name': f'tag:{TAG_KEY}', 'Values': [TAG_VALUE]},
-                     {'Name': 'instance-state-name', 'Values': ['running', 'pending']}]
+        response = ssm.get_parameter(
+            Name="/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2"
         )
-        count = sum(len(r['Instances']) for r in response['Reservations'])
-        
-        # Hard limit check
-        if count >= 2:
-            print(f"Error: You have {count} servers running. Limit is 2.")
-            return
+        return response["Parameter"]["Value"]
+    except:
+        # Fallback if permission issue
+        return "ami-04b4f1a9cf54c11d0"
 
-        print("Creating new instance...")
+
+# ---------------- EC2 ----------------
+
+def get_my_instances():
+    response = ec2.describe_instances(
+        Filters=[
+            {'Name': 'tag:CreatedBy', 'Values': ['avishag-cli']},
+            {'Name': 'instance-state-name', 'Values': ['running', 'pending']}
+        ]
+    )
+    instances = []
+    for r in response['Reservations']:
+        for i in r['Instances']:
+            instances.append(i)
+    return instances
+
+
+def create_instance():
+    instances = get_my_instances()
+    if len(instances) >= 2:
+        print("Limit reached: 2 instances max.")
+        return
+
+    ami = get_latest_ami()
+    print(f"Creating instance (AMI: {ami})...")
+
+    try:
         res = ec2.run_instances(
-            ImageId=AMI_ID, InstanceType=INSTANCE_TYPE, MinCount=1, MaxCount=1,
-            TagSpecifications=[{'ResourceType': 'instance', 
-                                'Tags': [{'Key': TAG_KEY, 'Value': TAG_VALUE}, 
-                                         {'Key': 'Name', 'Value': 'My-Auto-Server'}]}]
+            ImageId=ami,
+            InstanceType=INSTANCE_TYPE,
+            MinCount=1,
+            MaxCount=1,
+            TagSpecifications=[{
+                'ResourceType': 'instance',
+                'Tags': TAGS + [{'Key': 'Name', 'Value': 'CLI-Server'}]
+            }]
         )
-        print(f"Instance created successfully: {res['Instances'][0]['InstanceId']}")
+        print("Instance created:", res['Instances'][0]['InstanceId'])
     except Exception as e:
-        print(f"Error: {e}")
+        print("Error:", e)
+
 
 def list_instances():
-    print("\nListing instances:")
-    try:
-        response = ec2.describe_instances(Filters=[{'Name': f'tag:{TAG_KEY}', 'Values': [TAG_VALUE]}])
-        found = False
-        for r in response['Reservations']:
-            for i in r['Instances']:
-                state = i['State']['Name']
-                public_ip = i.get('PublicIpAddress', 'N/A')
-                print(f"ID: {i['InstanceId']} | Status: {state} | IP: {public_ip}")
-                found = True
-        if not found: print("No instances found.")
-    except Exception as e:
-        print(f"Error: {e}")
+    instances = get_my_instances()
+    if not instances:
+        print("No instances found.")
+        return
+
+    print("\nMy Instances:")
+    for i in instances:
+        print(f"ID: {i['InstanceId']} | State: {i['State']['Name']} | IP: {i.get('PublicIpAddress', 'N/A')}")
+
 
 def stop_instance():
     list_instances()
-    instance_id = input("Enter Instance ID to stop: ").strip()
-    try:
-        # Verify ownership
-        check = ec2.describe_instances(InstanceIds=[instance_id], Filters=[{'Name': f'tag:{TAG_KEY}', 'Values': [TAG_VALUE]}])
-        if not check['Reservations']:
-            print("Access Denied: This instance is not yours.")
-            return
-        ec2.stop_instances(InstanceIds=[instance_id])
-        print(f"Stopping instance {instance_id}...")
-    except Exception as e:
-        print(f"Error: {e}")
+    instance_id = input("Enter instance ID to stop: ").strip()
 
-# --- S3 Functions ---
-def create_bucket():
-    bucket_name = input("Enter bucket name: ").strip().lower()
-    is_public = input("Public bucket? (yes/no): ").strip().lower()
-    
-    acl = 'private'
-    if is_public == 'yes':
-        confirm = input("Are you sure? (yes/no): ")
-        if confirm == 'yes': acl = 'public-read'
-    
+    my_ids = [i['InstanceId'] for i in get_my_instances()]
+    if instance_id not in my_ids:
+        print("Access denied: Not your instance.")
+        return
+
     try:
-        print(f"Creating bucket {bucket_name}...")
-        s3.create_bucket(Bucket=bucket_name)
-        
-        # Add tag for identification
-        s3.put_bucket_tagging(
-            Bucket=bucket_name,
-            Tagging={'TagSet': [{'Key': TAG_KEY, 'Value': TAG_VALUE}]}
-        )
-        
-        if acl == 'public-read':
-            try:
-                s3.put_bucket_acl(Bucket=bucket_name, ACL='public-read')
-                print("Bucket is now Public.")
-            except:
-                print("Warning: Could not set public access.")
-        
-        print("Bucket created successfully.")
+        ec2.stop_instances(InstanceIds=[instance_id])
+        print("Stopping:", instance_id)
     except Exception as e:
-        print(f"Error: {e}")
+        print("Error:", e)
+
+
+# ---------------- S3 ----------------
+
+def create_bucket():
+    bucket = input("Bucket name: ").strip().lower()
+    public = input("Public? (yes/no): ").strip().lower()
+
+    acl = "private"
+    if public == "yes":
+        confirm = input("Are you sure? (yes/no): ").strip().lower()
+        if confirm == "yes":
+            acl = "public-read"
+        else:
+            print("Cancelled public access.")
+            return
+
+    try:
+        s3.create_bucket(Bucket=bucket)
+
+        s3.put_bucket_tagging(
+            Bucket=bucket,
+            Tagging={'TagSet': TAGS}
+        )
+
+        if acl == "public-read":
+            try:
+                s3.delete_public_access_block(Bucket=bucket)
+                s3.put_bucket_acl(Bucket=bucket, ACL="public-read")
+                print("Bucket is Public.")
+            except:
+                print("Could not set public ACL (Check permissions). Created as private.")
+
+        print("Bucket created.")
+    except Exception as e:
+        print("Error:", e)
+
 
 def list_buckets():
     print("\nMy Buckets:")
     try:
         response = s3.list_buckets()
         found = False
-        for bucket in response['Buckets']:
-            name = bucket['Name']
+
+        for b in response['Buckets']:
             try:
-                tags = s3.get_bucket_tagging(Bucket=name)
-                tag_set = tags.get('TagSet', [])
-                # Check if tag exists
-                if any(t['Key'] == TAG_KEY and t['Value'] == TAG_VALUE for t in tag_set):
-                    print(f"- {name}")
+                tags = s3.get_bucket_tagging(Bucket=b['Name'])['TagSet']
+                if any(t['Key'] == 'CreatedBy' and t['Value'] == 'avishag-cli' for t in tags):
+                    print("-", b['Name'])
                     found = True
-            except: continue
-        if not found: print("No buckets found.")
+            except:
+                continue
+
+        if not found:
+            print("No buckets found.")
     except Exception as e:
-        print(f"Error: {e}")
+        print("Error:", e)
+
 
 def upload_file():
     list_buckets()
-    bucket_name = input("Enter Bucket Name: ").strip()
-    # Remove quotes if user added them
-    file_path = input("Enter full file path: ").strip().replace('"', '')
-    file_name = os.path.basename(file_path)
-    
+    bucket = input("Bucket name: ").strip()
+    path = input("File path: ").strip().replace('"', '')
+    name = os.path.basename(path)
+
     try:
-        # Check permissions
-        tags = s3.get_bucket_tagging(Bucket=bucket_name)
-        tag_set = tags.get('TagSet', [])
-        if not any(t['Key'] == TAG_KEY and t['Value'] == TAG_VALUE for t in tag_set):
-             print("Access Denied.")
-             return
-        
-        print(f"Uploading {file_name}...")
-        s3.upload_file(file_path, bucket_name, file_name)
+        tags = s3.get_bucket_tagging(Bucket=bucket)['TagSet']
+        if not any(t['Key'] == 'CreatedBy' and t['Value'] == 'avishag-cli' for t in tags):
+            print("Access denied.")
+            return
+
+        s3.upload_file(path, bucket, name)
         print("Upload complete.")
     except Exception as e:
-        print(f"Error: {e}")
+        print("Error:", e)
 
-# --- Route53 Functions ---
+
+# ---------------- Route53 ----------------
+
 def create_dns_zone():
-    zone_name = input("Enter Domain name: ").strip()
+    domain = input("Domain name: ").strip()
+
     try:
-        print(f"Creating Zone: {zone_name}...")
         ref = str(time.time())
-        res = route53.create_hosted_zone(Name=zone_name, CallerReference=ref)
+        res = route53.create_hosted_zone(Name=domain, CallerReference=ref)
         zone_id = res['HostedZone']['Id'].split('/')[-1]
 
-        # Tagging the zone
         route53.change_tags_for_resource(
             ResourceType='hostedzone',
             ResourceId=zone_id,
-            AddTags=[{'Key': TAG_KEY, 'Value': TAG_VALUE}]
+            AddTags=TAGS
         )
-        print(f"Zone created. ID: {zone_id}")
+
+        print("Zone created:", zone_id)
     except Exception as e:
-        print(f"Error: {e}")
+        print("Error:", e)
+
 
 def list_dns_zones():
     print("\nMy DNS Zones:")
     try:
         response = route53.list_hosted_zones()
         found = False
-        for zone in response['HostedZones']:
-            clean_id = zone['Id'].split('/')[-1]
+
+        for z in response['HostedZones']:
+            zid = z['Id'].split('/')[-1]
             try:
-                tags = route53.list_tags_for_resource(ResourceType='hostedzone', ResourceId=clean_id)
-                tag_list = tags['ResourceTagSet']['Tags']
-                if any(t['Key'] == TAG_KEY and t['Value'] == TAG_VALUE for t in tag_list):
-                    print(f"- {zone['Name']} (ID: {clean_id})")
+                tags = route53.list_tags_for_resource(
+                    ResourceType='hostedzone',
+                    ResourceId=zid
+                )['ResourceTagSet']['Tags']
+
+                if any(t['Key'] == 'CreatedBy' and t['Value'] == 'avishag-cli' for t in tags):
+                    print(f"{z['Name']} (ID: {zid})")
                     found = True
-            except: continue
-            
-        if not found: print("No zones found.")
+            except:
+                continue
+
+        if not found:
+            print("No zones found.")
     except Exception as e:
-        print(f"Error: {e}")
+        print("Error:", e)
+
 
 def create_dns_record():
     list_dns_zones()
-    zone_id = input("Enter Zone ID: ").strip()
-    record_name = input("Enter Record Name: ").strip()
-    record_value = input("Enter IP Value: ").strip()
-    
+    zone_id = input("Zone ID: ").strip()
+    name = input("Record name: ").strip()
+    value = input("IP value: ").strip()
+
     try:
-        # Check ownership
-        tags = route53.list_tags_for_resource(ResourceType='hostedzone', ResourceId=zone_id)
-        tag_list = tags['ResourceTagSet']['Tags']
-        if not any(t['Key'] == TAG_KEY and t['Value'] == TAG_VALUE for t in tag_list):
-            print("Access Denied.")
+        tags = route53.list_tags_for_resource(
+            ResourceType='hostedzone',
+            ResourceId=zone_id
+        )['ResourceTagSet']['Tags']
+
+        if not any(t['Key'] == 'CreatedBy' and t['Value'] == 'avishag-cli' for t in tags):
+            print("Access denied.")
             return
 
         route53.change_resource_record_sets(
@@ -199,20 +243,22 @@ def create_dns_record():
                 'Changes': [{
                     'Action': 'UPSERT',
                     'ResourceRecordSet': {
-                        'Name': record_name,
+                        'Name': name,
                         'Type': 'A',
                         'TTL': 300,
-                        'ResourceRecords': [{'Value': record_value}]
+                        'ResourceRecords': [{'Value': value}]
                     }
                 }]
             }
         )
-        print("Record created successfully.")
+        print("Record created.")
     except Exception as e:
-        print(f"Error: {e}")
+        print("Error:", e)
 
-# --- Main Menu ---
-if __name__ == "__main__":
+
+# ---------------- Menu ----------------
+
+def menu():
     while True:
         print("\n--- AWS CLI Tool ---")
         print("1. Create EC2 Instance")
@@ -223,19 +269,24 @@ if __name__ == "__main__":
         print("6. Upload File to S3")
         print("7. Create DNS Zone")
         print("8. List DNS Zones")
-        print("9. Add DNS Record")
+        print("9. Create DNS Record")
         print("0. Exit")
-        
-        choice = input("Select: ").strip()
 
-        if choice == "1": create_instance()
-        elif choice == "2": list_instances()
-        elif choice == "3": stop_instance()
-        elif choice == "4": create_bucket()
-        elif choice == "5": list_buckets()
-        elif choice == "6": upload_file()
-        elif choice == "7": create_dns_zone()
-        elif choice == "8": list_dns_zones()
-        elif choice == "9": create_dns_record()
-        elif choice == "0": break
-        else: print("Invalid option.")
+        c = input("Select: ").strip()
+
+        if c == "1": create_instance()
+        elif c == "2": list_instances()
+        elif c == "3": stop_instance()
+        elif c == "4": create_bucket()
+        elif c == "5": list_buckets()
+        elif c == "6": upload_file()
+        elif c == "7": create_dns_zone()
+        elif c == "8": list_dns_zones()
+        elif c == "9": create_dns_record()
+        elif c == "0": break
+        else:
+            print("Invalid option.")
+
+
+if __name__ == "__main__":
+    menu()
